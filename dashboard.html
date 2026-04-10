@@ -1,46 +1,185 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Dashboard</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fuel Pump Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body>
+<body class="bg-slate-100 min-h-screen">
+  <div id="root"></div>
 
-<div class="container">
-<h2>Dashboard</h2>
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
 
-<table>
-<thead>
-<tr>
-<th>Wing</th><th>New Tube</th><th>New Surface</th>
-<th>Old Tube</th><th>Old Surface</th>
-<th>Working</th><th>Non-working</th>
-</tr>
-</thead>
-<tbody id="table"></tbody>
-</table>
+    const TOTAL_PUMPS = 6;
+    const API_BASE_URL = "http://localhost:3001/fuel-transactions";
 
-</div>
+    function getColor(status) {
+      switch (status) {
+        case "IN_PROGRESS":
+          return "bg-yellow-100 text-yellow-800 border-yellow-200";
+        case "COMPLETED":
+          return "bg-green-100 text-green-800 border-green-200";
+        case "IDLE":
+        default:
+          return "bg-slate-200 text-slate-700 border-slate-300";
+      }
+    }
 
-<script>
-fetch("/dashboard")
-.then(r=>r.json())
-.then(data=>{
-  for(let w in data){
-    let s=data[w];
-    table.innerHTML+=`
-    <tr>
-      <td>${w}</td>
-      <td>${s.newTube}</td>
-      <td>${s.newSurface}</td>
-      <td>${s.oldTube}</td>
-      <td>${s.oldSurface}</td>
-      <td>${s.working}</td>
-      <td>${s.nonworking}</td>
-    </tr>`;
-  }
-});
-</script>
+    function PumpCard({ pump, isStarting, onStart }) {
+      const isInProgress = pump.status === "IN_PROGRESS";
+      const isDisabled = isInProgress || isStarting;
 
+      return (
+        <article className="rounded-xl bg-white shadow-sm border border-slate-200 p-5 flex flex-col gap-4">
+          <div className="flex items-start justify-between">
+            <h3 className="text-lg font-semibold text-slate-900">Pump {pump.pumpId}</h3>
+            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${getColor(pump.status)}`}>
+              {pump.status}
+            </span>
+          </div>
+
+          <div>
+            <p className="text-sm text-slate-500">Requested Amount</p>
+            <p className="text-2xl font-bold text-slate-900">{pump.requestedAmount}</p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => onStart(pump.pumpId)}
+            disabled={isDisabled}
+            className="mt-auto w-full rounded-lg px-4 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-400 disabled:cursor-not-allowed transition"
+          >
+            {isStarting ? "Starting..." : "Start"}
+          </button>
+        </article>
+      );
+    }
+
+    function App() {
+      const [transactions, setTransactions] = useState([]);
+      const [isFetching, setIsFetching] = useState(false);
+      const [startLoadingByPump, setStartLoadingByPump] = useState({});
+      const isFetchingRef = useRef(false);
+
+      const pumps = useMemo(() => {
+        const byPumpId = new Map();
+
+        transactions.forEach((transaction) => {
+          byPumpId.set(Number(transaction.pumpId), {
+            pumpId: Number(transaction.pumpId),
+            status: transaction.status || "IDLE",
+            requestedAmount: Number(transaction.requestedAmount) || 0,
+          });
+        });
+
+        return Array.from({ length: TOTAL_PUMPS }, (_, index) => {
+          const pumpId = index + 1;
+          return byPumpId.get(pumpId) || {
+            pumpId,
+            status: "IDLE",
+            requestedAmount: 0,
+          };
+        });
+      }, [transactions]);
+
+      const fetchActiveTransactions = async () => {
+        if (isFetchingRef.current) {
+          return;
+        }
+
+        isFetchingRef.current = true;
+        setIsFetching(true);
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/active/list`);
+          if (!response.ok) {
+            throw new Error(`Fetch failed: ${response.status}`);
+          }
+
+          const data = await response.json();
+          setTransactions(Array.isArray(data) ? data : []);
+        } catch (error) {
+          console.error("Failed to fetch active fuel transactions:", error);
+        } finally {
+          isFetchingRef.current = false;
+          setIsFetching(false);
+        }
+      };
+
+      useEffect(() => {
+        let isMounted = true;
+
+        const safeFetch = async () => {
+          if (!isMounted) return;
+          await fetchActiveTransactions();
+        };
+
+        safeFetch();
+        const intervalId = setInterval(safeFetch, 3000);
+
+        return () => {
+          isMounted = false;
+          clearInterval(intervalId);
+        };
+      }, []);
+
+      const handleStartTransaction = async (pumpId) => {
+        setStartLoadingByPump((prev) => ({ ...prev, [pumpId]: true }));
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/start`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              pumpId,
+              nozzleId: 1,
+              requestedAmount: 500,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Start failed: ${response.status}`);
+          }
+
+          await fetchActiveTransactions();
+        } catch (error) {
+          console.error(`Failed to start transaction for pump ${pumpId}:`, error);
+        } finally {
+          setStartLoadingByPump((prev) => ({ ...prev, [pumpId]: false }));
+        }
+      };
+
+      return (
+        <main className="max-w-6xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+          <header className="mb-6">
+            <h1 className="text-3xl font-bold text-slate-900">Fuel Pump Simulator Dashboard</h1>
+            <p className="text-slate-600 mt-1">Live view of pump activity (auto-refresh every 3 seconds).</p>
+            {isFetching && <p className="text-xs text-slate-500 mt-2">Refreshing active transactions...</p>}
+          </header>
+
+          <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {pumps.map((pump) => (
+              <PumpCard
+                key={pump.pumpId}
+                pump={pump}
+                isStarting={Boolean(startLoadingByPump[pump.pumpId])}
+                onStart={handleStartTransaction}
+              />
+            ))}
+          </section>
+        </main>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
 </body>
 </html>
